@@ -3,32 +3,19 @@ using UnityEngine;
 
 namespace WarpShip
 {
-	public class WSXStuff
-	{
-		public static double ThingAvailable(Vessel vessel, string resource)
-		{
-			double charge = 0.0;
-			if (vessel != null) {
-				foreach (Part p in vessel.parts) {
-					if (p.Resources.Contains (resource)) {
-						charge += p.Resources [resource].amount;
-					}
-				}
-			}
-			return charge;
-		}
-	}
-
 	public class ContainmentSystem : PartModule
 	{
 		[KSPField(isPersistant = false)]
-		string resourceHeld = "WarpPlasma";
+		public string resourceHeld = "WarpPlasma";
 
 		[KSPField(isPersistant = false)]
-		string resourceUsed = "ElectricCharge";
+		public string resourceUsed = "ElectricCharge";
 
 		[KSPField(isPersistant = false)]
-		double ratio = 0.1;
+		public double ratio = 0.05;
+
+		[KSPField(isPersistant = false)]
+		public bool stable = false;
 
 		double ChargeNeeded(Part part)
 		{
@@ -46,29 +33,38 @@ namespace WarpShip
 			return WSXStuff.ThingAvailable (vessel, resourceUsed);
 		}
 			
+		public bool ContainmentBreach()
+		{
+			WSXStuff.RedAlert(vessel);
+			WSXStuff.PowerfulExplosion(part);
+			return false;
+		}
+			
 		public override string GetInfo()
 		{
-			double rounded_cn = (int)(ChargeNeeded (part) * 1000);
-			rounded_cn /= 1000;
-			return String.Format ("<b>{0} Used:</b> {1:F}/sec.", resourceUsed, rounded_cn);
+			if (stable) {
+				return "<b>Self-Powered</b>";
+			} else {
+				double cn = ChargeNeeded (part);
+				return String.Format ("<b>Peak {0} Used:</b> {1:F2}/sec.", resourceUsed, cn);
+			}
 		}
 
 		public void FixedUpdate()
 		{
+			if (stable || vessel == null)
+				return;
+			
 			double dt = (double)TimeWarp.fixedDeltaTime;
 			double c_needed = ChargeNeeded (part);
 			double needed = c_needed * dt;
 			double avail = ChargeAvailable ();
 
 			if (avail < needed) {
-				Part[] ship_parts = vessel.Parts.ToArray ();
-				foreach (Part p in ship_parts) {
-					if (p != vessel.rootPart && p != this.part) {
-						p.explode ();
-					}
+				part.temperature += 1600.0 * dt;
+				if (part.temperature > part.maxTemp) {
+					ContainmentBreach ();
 				}
-				vessel.rootPart.explode ();
-				this.part.explode ();
 				return;
 			}
 			part.RequestResource (resourceUsed, needed);

@@ -41,6 +41,12 @@
     <Compile Include="WSXContainmentSystem.cs" />
     <Compile Include="WSXWarpDrive.cs" />
     <Compile Include="WSXDevelocitizer.cs" />
+    <Compile Include="WSXAtmosphericScoop.cs" />
+    <Compile Include="WSXWarpDriveEnhancer.cs" />
+    <Compile Include="WSXFSAnimateGeneric.cs" />
+    <Compile Include="WSXStuff.cs" />
+    <Compile Include="WSXAntimatterScoop.cs" />
+    <Compile Include="WSXSpaceElevator.cs" />
   </ItemGroup>
   <Import Project="$(MSBuildBinPath)\Microsoft.CSharp.targets" />
 </Project>

@@ -27,7 +27,11 @@ namespace WarpShip
 		[KSPField]
 		public string disengageEffectName = "disengage";
 		[KSPField]
-		public string spoolEffectName = "spool";
+		public string idleEffectName = "idle";
+		[KSPField]
+		public string warningEffectName = "warning";
+		[KSPField]
+		public string alertEffectName = "alert";
 		[KSPField]
 		public string powerEffectName = "power";
 		[KSPField]
@@ -35,6 +39,8 @@ namespace WarpShip
 
 		[KSPField(isPersistant = true, guiActive = true, guiActiveEditor = true, guiName = "Warp Factor") , UI_FloatRange(minValue = 0f, maxValue = 10f, stepIncrement = 0.5f)]
 		public float displayWarpFactor = 10f;
+
+		public float tweakFactor = 1.34f;
 
 		[KSPField(guiActive = true, guiName = "Warp Drive", guiActiveEditor = false)]
 		public string status = "inactive";
@@ -46,7 +52,13 @@ namespace WarpShip
 		public string warpAnimationName = "WarpField";
 
 		[KSPField] 
-		public float WarpFactor = 1.65f;
+		public float WarpFactor = 15f;
+
+		[KSPField]
+		public float PlasmaMultiply = 4.0f;
+
+		[KSPField]
+		public float ElectricMultiply = 100.0f;
 
 		[KSPField]
 		public float Demasting = 10f;
@@ -63,14 +75,29 @@ namespace WarpShip
 		[KSPField(isPersistant = true)] 
 		public bool IsActivated = false;
 
+		[KSPField(isPersistant = true)] 
+		public bool IsEnhanced = false;
+
+		[KSPField(isPersistant = true)] 
+		public int enhancerPoll = 0;
+
+		[KSPField(isPersistant = true)] 
+		public bool alertCondition = false;
+
+		[KSPField(isPersistant = true)] 
+		public float alertTimer = 0;
+
 		[KSPField]
 		public double DisruptRange = 2000.0;
 
 		[KSPField]
 		public int BubbleSize = 20;
 
+		[KSPField(isPersistant = true)]
+		public int BubbleEnhancement = 0;
+
 		[KSPField]
-		public float MinAltitude = 1f;
+		public float MinAltitude = 500000f;
 
 		[KSPField(guiName = "Conservation", isPersistant = true, guiActiveEditor = true, guiActive = false)]
 		[UI_Toggle(disabledText = "Velocity", enabledText = "Angular Momentum")]
@@ -82,8 +109,27 @@ namespace WarpShip
 		public void ToggleBubbleGuide()
 		{
 			var gobj = FindEditorWarpBubble();
-			if (gobj != null)
-				gobj.renderer.enabled = !gobj.renderer.enabled;
+
+			try 
+			{
+				if (gobj != null) {
+					gobj.renderer.enabled = !gobj.renderer.enabled;
+					if (gobj.renderer.enabled) {
+
+						var enhancer = FindEnhancer ();
+						if (enhancer != null) {
+							float enh = 1f + ((float)enhancer.GetEffectiveness (this)) / (float)BubbleSize;
+							gobj.transform.localScale = new Vector3 (enh, enh, enh);
+						} else {
+							gobj.transform.localScale = new Vector3 (1f, 1f, 1f);
+						}
+					}
+				}
+			}
+			catch (Exception ex)
+			{
+				print(String.Format("[WSXWARP] Error in ToggleBubbleGuide - {0}", ex.Message));
+			}
 
 		}
 
@@ -119,6 +165,9 @@ namespace WarpShip
 			}
 		}
 
+		private GameObject storedGameObject = null;
+		private bool silenceWarnings = false;
+		private double currentPlasma;
 
 		private const int LIGHTSPEED = 299792458;
 		private const int SUBLIGHT_MULT = 40;
@@ -136,6 +185,7 @@ namespace WarpShip
 		private double OriginalMomentumSqr;
 		private double SemiLatusOriginal;
 		private int ElipMode;
+		private float deployTimer = 0f;
 
 		private VInfoBox plasma_gauge;
 		private VInfoBox electric_gauge;
@@ -163,6 +213,8 @@ namespace WarpShip
 			{
 				if (_state == StartState.Editor) return;
 
+				silenceWarnings = true;
+
 				part.force_activate();
 				CheckBubbleDeployment(1000);
 
@@ -174,6 +226,18 @@ namespace WarpShip
 				if (AMConservationMode == false) 
 				{
 					ConservationMode = "Velocity";
+				}
+
+				silenceWarnings = false;
+
+				if (!alertCondition) {
+					if (IsActivated) {
+						Events ["Activate"].active = false;
+						Events ["Shutdown"].active = true;
+					} else {
+						Events ["Activate"].active = true;
+						Events ["Shutdown"].active = false;
+					}
 				}
 			}
 			catch (Exception ex)
@@ -230,17 +294,87 @@ namespace WarpShip
 			}
 		}
 
+		private void WarningSound()
+		{
+			if (!silenceWarnings) {
+				part.Effect (warningEffectName, 1f);
+			}
+		}
+
+		public void CallRedAlert()
+		{
+			if (IsActivated) {
+				ShutdownDrive(true);
+			}
+			RedAlert();
+		}
+
+		private void RedAlert()
+		{
+			part.Effect (alertEffectName, 1f);
+			SetupAlertEvents();
+			alertCondition = true;
+			alertTimer = 20.0f;
+			status = "Catastrophic Failure!";
+		}
+
+		private void SetupAlertEvents()
+		{
+			Events["CancelRedAlert"].active = true;
+			Events["Activate"].active = false;
+			Events["Shutdown"].active = false;
+		}
+
+		[KSPEvent(guiName = "Cancel Alert", guiActive = true, active = false)]
+		private void CancelRedAlert()
+		{
+			part.Effect (alertEffectName, 0f);
+			Events ["CancelRedAlert"].active = false;
+			Events ["Activate"].active = true;
+			Events ["Shutdown"].active = false;
+			alertCondition = false;
+		}
+
 		private bool CheckAltitude()
 		{
 			status = "inactive";
+			if (!vessel)
+				return false;
+			
 			if (FlightGlobals.currentMainBody != null) 
 			{
-				var altCutoff = FlightGlobals.currentMainBody.Radius * MinAltitude;
+				var altCutoff = MinAltitude;
 				if (vessel.altitude < altCutoff) {
-					status = "failsafe: " + Math.Round (altCutoff / 1000, 0) + "km";
+					status = "Failsafe: " + Math.Round (altCutoff / 1000, 0).ToString() + "km";
+					WarningSound ();
 					return false;
 				}
 			}
+				
+			try
+			{
+				double sqDisrupt = DisruptRange*DisruptRange;
+				var posCur = vessel.GetWorldPos3D();
+				foreach (var v in FlightGlobals.Vessels.Where(
+					x => x.mainBody == vessel.mainBody))
+				{
+					var posNext = v.GetWorldPos3D();
+					var sqDistance = (posNext-posCur).sqrMagnitude;
+					if (sqDistance < sqDisrupt)
+					{
+						if (v == vessel) continue;
+						status = "Failsafe: " + v.vesselName;
+						WarningSound ();
+						return false;
+					}
+				}
+			}
+			catch (Exception ex)
+			{
+				print (String.Format ("[WSXWARP] - ERROR in CheckAltitude - {0}", ex.Message));
+			}
+
+
 			return true;
 		}
 
@@ -260,7 +394,7 @@ namespace WarpShip
 			electric_gauge = CreateGauge ("ElectricCharge");
 		}
 
-		private void UpdateGauge(VInfoBox vi, string resource) {
+		private double UpdateGauge(VInfoBox vi, string resource) {
 			double got = 0.0;
 			double max = 0.0;
 			if (vessel != null) {
@@ -276,19 +410,34 @@ namespace WarpShip
 			} else {
 				vi.SetValue (0.0f);
 			}
-			
+
+			return got;
+
 		}
 
-		private void UpdateAllGauges() {
-			UpdateGauge (electric_gauge, "ElectricCharge");
-			UpdateGauge (plasma_gauge, "WarpPlasma");
+		private bool UpdateAllGauges() {
+			try {
+				double elec = UpdateGauge (electric_gauge, "ElectricCharge");
+				double plas = UpdateGauge (plasma_gauge, "WarpPlasma");
+
+				currentPlasma = plas;
+
+				if (elec <= 1.0 || plas <= 0.0)
+					return true;
+			}
+			catch (Exception ex)
+			{
+				print(String.Format("[WSXWARP] Error in UpdateAllGauges - {0}", ex.Message));
+			}
+
+			return false;
 		}
 
 		private void SetPlasmaPowerError(float plasma, float wantPlasma) {
 			if (plasma < wantPlasma) {
-				status = "no plasma";
+				status = "No plasma";
 			} else {
-				status = "no power";
+				status = "No power";
 			}
 		}
 
@@ -296,9 +445,8 @@ namespace WarpShip
 		[KSPEvent(guiName = "Activate Drive", guiActive = true)]
 		public void Activate()
 		{
-			if (!IsActivated) {
+			if (!IsActivated && !alertCondition) {
 				if (CheckAltitude()) {
-					
 					// Don't bother activating if we can't power the drive
 					double actpower = 0.0;
 					double actplasma = 0.0;
@@ -314,6 +462,7 @@ namespace WarpShip
 					}
 					if (actpower < 10f || actplasma < 1f) {
 						SetPlasmaPowerError((float)actplasma, 1f);
+						WarningSound();
 						return;
 					}
 
@@ -332,13 +481,25 @@ namespace WarpShip
 		[KSPEvent(guiName = "Shutdown Drive", guiActive = true, active = false)]
 		public void Shutdown()
 		{
+			ShutdownDrive(false);
+		}
+
+		private void ShutdownDrive(bool flameout)
+		{
 			if (IsActivated) {
-				part.Effect(disengageEffectName, 1.0f);
+				if (flameout)
+					part.Effect(flameoutEffectName, 1.0f);
+				else
+					part.Effect(disengageEffectName, 1.0f);
+
+				part.Effect(powerEffectName, 0.0f);
 				IsActivated = false;
 				Events["Shutdown"].active = false;
 				Events["Activate"].active = true;
 
 				part.stackIcon.ClearInfoBoxes();
+
+				CurrentSpeed = 0.0;
 			}
 		}
 
@@ -351,7 +512,7 @@ namespace WarpShip
 		[KSPAction("Shutdown Drive")]
 		public void DeactivateDriveAction(KSPActionParam ap)
 		{
-			Shutdown();
+			ShutdownDrive(false);
 		}
 
 		[KSPAction("Toggle Drive")]
@@ -360,7 +521,7 @@ namespace WarpShip
 			if (!IsActivated) {
 				Activate();
 			} else {
-				Shutdown();
+				ShutdownDrive(false);
 			}
 		}
 
@@ -369,11 +530,80 @@ namespace WarpShip
 			Activate();
 		}
 
+		private static WarpDriveEnhancer FindEnhancerInPart (Part p)
+		{
+			var enhancer = p.FindModuleImplementing<WarpDriveEnhancer> ();
+			if (enhancer) {
+				if (enhancer.AreYouHere ()) {
+					return enhancer;
+				}
+			}
+			return null;
+		}
+
+		private WarpDriveEnhancer FindEnhancer() 
+		{
+			try 
+			{
+				if (vessel != null) {
+					foreach (Part p in vessel.parts) {
+						WarpDriveEnhancer e = FindEnhancerInPart (p);
+						if (e) return e;
+					}
+				} else {
+					// need this for the VAB
+					if (part) {
+						Part root = part;
+						int loops = 0;
+						while (root.parent != null) {
+							if (root == root.parent) {
+								print("[WSXWARP] root == root.parent");
+								break;
+							}
+							root = root.parent;
+							loops++;
+
+							if (loops > 3000) {
+								print("[WSXWARP] Infinite loop in root search");
+								return null;
+							}
+						}
+
+						Part[] partlist = root.FindChildParts<Part>(true);
+						for (var i=0;i<partlist.Length;i++) {
+							WarpDriveEnhancer e = FindEnhancerInPart (partlist[i]);
+							if (e) return e;
+						}
+					}
+				}
+			}
+			catch (Exception ex)
+			{
+				print(String.Format("[WSXWARP] Error in FindEnhancer - {0}", ex.Message));
+			}
+
+			return null;
+		}
+
 		public void FixedUpdate()
 		{
 			try
 			{
 				if (vessel == null || part == null || _state == StartState.Editor) return;
+
+				if (enhancerPoll <= 0) {	
+					IsEnhanced = false;
+					BubbleEnhancement = 0;
+					enhancerPoll = 25;
+
+					var enhancer = FindEnhancer();
+					if (enhancer != null) {
+						BubbleEnhancement = enhancer.GetEffectiveness(this);
+						IsEnhanced = true;
+					}
+
+				} else
+					enhancerPoll--;
 
 				if (IsDeployed != IsActivated)
 				{
@@ -382,30 +612,59 @@ namespace WarpShip
 					SetPartState(IsActivated);
 				}
 
+				if (!IsDeployed) {
+					part.Effect(idleEffectName, 0.0f);
+				}
+
+				if (alertCondition) {
+					SetupAlertEvents();
+					alertTimer -= TimeWarp.fixedDeltaTime;
+					if (alertTimer <= 0.0) {
+						CancelRedAlert();
+					}
+					return;
+				}
+					
 				if (IsDeployed)
 				{
-					//Failsafe
-					if (!CheckAltitude())
-					{
-						Shutdown();
-						return;
-					}
+					float currentThrottle = vessel.ctrlState.mainThrottle * (displayWarpFactor/10.0f);
 
-					//Snip partsx
-					DecoupleBubbleParts();
-					//Other ships -isn't working for some reason,  throwing errors to log
-					DestroyNearbyShips(DisruptRange, false);
+					//Failsafe
+					if (deployTimer <= 0.0) {
+						// The Kraken tends to eat things that get close to the bubble
+						if (currentThrottle < MinThrottle) {
+							if (!CheckBubbleDistances()) {
+								return;
+							}
+						}
+
+						if (!CheckAltitude()) {
+							ShutdownDrive(false);
+							return;
+						}
+					}
 
 					if (IsActivated && plasma_gauge == null) CreateAllGauges();
 
 					double dt = (double)TimeWarp.fixedDeltaTime;
+
+					if (deployTimer > 0.0) {
+						deployTimer -= (float)dt;
+						PlayWarpAnimation(currentThrottle);
+						UpdateAllGauges();
+						return;
+					}
+
+
+					part.Effect(idleEffectName, 1.0f);
+					part.Effect(powerEffectName, currentThrottle);
+
 					bool flameout = false;
-		
-					float currentThrottle = vessel.ctrlState.mainThrottle * (displayWarpFactor/10.0f);
-					if (currentThrottle > MinThrottle) {
+
+					if (currentThrottle >= MinThrottle) {
 						// Use up Plasma and Electricity to maintain the warp field
-						float plasmaNeeded = (float)(10.0 * currentThrottle * dt);
-						float elecNeeded = (float)(100.0 * currentThrottle * dt);
+						float plasmaNeeded = (float)(PlasmaMultiply * WarpFactor * currentThrottle * dt);
+						float elecNeeded = (float)(ElectricMultiply * WarpFactor * currentThrottle * dt);
 
 						float plasmaUsed = part.RequestResource("WarpPlasma", plasmaNeeded);
 						float elecUsed = part.RequestResource("ElectricCharge", elecNeeded);
@@ -413,21 +672,26 @@ namespace WarpShip
 							flameout = true;
 							SetPlasmaPowerError(plasmaUsed, plasmaNeeded);
 						}
-					} else {
-						currentThrottle = 0f;
+					}	
+					if (UpdateAllGauges()) {
+						flameout = true;
+						SetPlasmaPowerError((float)currentPlasma, 1.0f);
 					}
-					UpdateAllGauges();
 
 					//OH NO FLAMEOUT!
+					// (actually it isn't all that bad anymore)
 					if (flameout)
 					{
-						FlightInputHandler.state.mainThrottle = 0;
+						WarningSound ();
 						BubbleCollapse();
-						Shutdown();
+						ShutdownDrive(true);
 						return;
 					}
 
 					PlayWarpAnimation(currentThrottle);
+
+					if (currentThrottle < MinThrottle)
+						return;
 
 					//Start by adding in our subluminal speed which is exponential
 					double lowerThrottle = (Math.Min(currentThrottle, SUBLIGHT_THROTTLE) * SUBLIGHT_MULT);
@@ -436,7 +700,7 @@ namespace WarpShip
 					//Then if throttle is over our threshold, go linear
 					if (currentThrottle > SUBLIGHT_THROTTLE)
 					{
-						//How much headroon do we have
+						//How much headroom do we have
 						double maxSpeed = (LIGHTSPEED/50*WarpFactor) - distance;
 						//How much of this can we use?
 						var upperThrottle = currentThrottle - SUBLIGHT_THROTTLE;
@@ -468,7 +732,7 @@ namespace WarpShip
 
 					double c = (distance * 50) / LIGHTSPEED;
 					status = String.Format("{1:n0} m/s [{0:0}%c]", c*100f, distance * 50);
-					if (currentThrottle > MinThrottle)
+					if (currentThrottle >= MinThrottle)
 					{
 						// Translate through space on the back of a Kraken!
 						Vector3d ps = vessel.transform.position + (transform.up*(float)(distance));
@@ -555,66 +819,148 @@ namespace WarpShip
 				ElipMode = 1;
 			}
 		}
-
-
+			
 		private void BubbleCollapse()
 		{
+			FlightInputHandler.state.mainThrottle = 0;	
 			IsDeployed = false;
-			CheckBubbleDeployment(3);
-			SetPartState(false);
+			CheckBubbleDeployment (3);
+			SetPartState (false);
 		}
 
-		private void PlayWarpAnimation(float speed)
+		private void PlayWarpAnimation(float throttle)
 		{
 			try
 			{
-				WarpAnimation[warpAnimationName].speed = 0.5f + (speed * 2.0f);
+				float light = 0f;
+				if (BubbleEnhancement > 0) light = 1f;
+
+				WarpAnimation[warpAnimationName].speed = 0.5f + (throttle * 4.0f) + 0.5f*light;
 				if (!WarpAnimation.IsPlaying(warpAnimationName))
 				{
 					WarpAnimation.Play(warpAnimationName);
 				}
 				//Set our color
-				foreach (var gobj in GameObject.FindGameObjectsWithTag("Icon_Hidden"))
-				{
-					if (gobj.name == "Torus_001")
+				if (storedGameObject == null) {
+					foreach (var gobj in GameObject.FindGameObjectsWithTag("Icon_Hidden"))
 					{
-						//var rgb = ColorUtils.HSL2RGB(Math.Abs(speed - 1), 0.5, speed / 2);
-						var c = new Color(0.2f, 0.3f, 0.3f);
-						gobj.renderer.material.SetColor("_Color", c);
-						//gobj.transform.localScale = new Vector3(1.0f + speed, 1.0f + speed, 1.0f + speed);
+						if (gobj.name == "Torus_001")
+						{
+							storedGameObject = gobj;
+							break;
+						}
 					}
 				}
+
+				var c = new Color(0.2f + 0.2f*throttle + 0.2f*light, 0.3f + 0.5f*throttle, 0.3f + 0.6f*throttle + 0.1f*light);
+				storedGameObject.renderer.material.SetColor("_Color", c);
+
+				// Animated bubble ends up bigger?
+				float enh = tweakFactor * (1f + ((float)BubbleEnhancement / (float)BubbleSize));
+				storedGameObject.renderer.transform.localScale = new Vector3 (enh, enh, enh);
+
 			}
 			catch (Exception)
 			{
 				print("[WSXWARP] ERROR IN PlayWarpAnimation");
 			}
 		}
-		private void DecoupleBubbleParts()
+
+		//[KSPEvent(guiName = "Debug", guiActive = true)]
+		public void DebugBubble()
+		{
+			CheckBubbleDistances ();
+		}
+
+		private bool CheckBubbleDistances()
 		{
 			try
 			{
+				int partn = 0;
+				Part[] ExplodeParts = new Part[10];
+				bool SomethingExploded = false;
+
+				var posBubble = part.partTransform.position;
+				float sqrBubbleSize = BubbleSize+BubbleEnhancement;
+				sqrBubbleSize *= sqrBubbleSize;
+
 				foreach (var p in vessel.parts)
 				{
-					var posPart = p.partTransform.position;
-					var posBubble = part.partTransform.position;
-					double distance = Vector3d.Distance(posBubble, posPart);
-					if (distance > BubbleSize)
-					{
-						print("[WARP] Decoupling Part " + p.name);
-						p.decouple();
+					if (p == part) continue;
+
+					MeshFilter[] mf = p.FindModelComponents<MeshFilter>();
+					bool inside = false;
+					bool outside = false;
+					float longest = -1;
+
+					for (var i=0;i<mf.Length;i++) {
+						Bounds mrb = mf[i].mesh.bounds;
+
+						for (var z=-1;z<=1;z+=2) {
+							for (var y=-1;y<=1;y+=2) {
+								for (var x=-1;x<=1;x+=2) {
+									// xzy because that's the coordinate system KSP likes to use
+									Vector3 boxpt = new Vector3(mrb.center.x + x * mrb.extents.x,
+										mrb.center.z + z * mrb.extents.z, mrb.center.y + y * mrb.extents.y);
+									Vector3 tpt = p.transform.TransformPoint(boxpt);
+
+									float sqrDistance = (tpt-posBubble).sqrMagnitude;
+									if (sqrDistance <= sqrBubbleSize) {
+										inside = true;
+									} else {
+										outside = true;
+									}
+
+									if (sqrDistance > longest) {
+										longest = sqrDistance;
+									}
+										
+									// The bubble cuts this one in half
+									if (inside && outside) {
+										SomethingExploded = true;
+										ExplodeParts[partn++] = p;
+										if (partn == ExplodeParts.Length) {
+											Array.Resize<Part>(ref ExplodeParts, ExplodeParts.Length*2);
+										}
+										goto GotoConsideredHarmful;
+									}
+								}
+							}
+						}
 					}
+
+					GotoConsideredHarmful:
+					continue;
+				}
+
+				if (SomethingExploded) {					
+					BubbleCollapse();
+					ShutdownDrive(true);
+					for (var x=0;x<partn;x++) {
+						WSXStuff.PowerfulExplosion(ExplodeParts[x]);
+					}
+					WarningSound();
+					RedAlert();
+					return false;
 				}
 			}
-			catch (Exception)
+			catch (Exception ex)
 			{
-				print("[WSXWARP] ERROR IN DecoupleBubbleParts");
+				print(String.Format("[WSXWARP] Error in CheckBubbleDistances - {0}", ex.Message));
 			}
+
+			return true;
 		}
-		private void CheckBubbleDeployment(int speed)
+
+
+		private void CheckBubbleDeployment(int wantspeed)
 		{
 			try
 			{
+				int speed = wantspeed;
+				if (BubbleEnhancement > 0 && speed < 1000)
+					speed = wantspeed*5;
+					
 				//print("[WSXWARP] CHECKING BUBBLE " + speed);
 				//Turn off guide if there              
 				if (IsDeployed)
@@ -624,7 +970,6 @@ namespace WarpShip
 				else
 				{
 					SetRetractedState(-speed);
-					CheckAltitude();
 				}
 				if (_state != StartState.Editor)
 				{
@@ -640,6 +985,7 @@ namespace WarpShip
 		}
 		private GameObject FindEditorWarpBubble()
 		{
+			
 			foreach (var gobj in GameObject.FindObjectsOfType<GameObject>())
 			{
 				if (gobj.name == "EditorWarpBubble" && gobj.renderer != null)
@@ -666,6 +1012,11 @@ namespace WarpShip
 			{
 				IsDeployed = true;
 				PlayDeployAnimation(speed);
+
+				deployTimer = 1f;
+				if (BubbleEnhancement > 0)
+					deployTimer = 0.5f;
+			
 				//For Angular Momentum Calculations
 				if (AMConservationMode == true)
 				{
@@ -692,53 +1043,6 @@ namespace WarpShip
 			catch (Exception)
 			{
 				print("[WSXWARP] ERROR IN PlayDeployAnimation");
-			}
-		}
-
-
-
-		private void DestroyNearbyShips(double within, bool includeSelf)
-		{
-			try
-			{
-				var ships = GetNearbyVessels(within, includeSelf);
-				foreach (var s in ships)
-				{
-					foreach (var p in s.parts)
-					{
-						p.explode();
-					}
-				}
-			}
-			catch (Exception)
-			{
-				print("[WSXWARP] ERROR IN DestroyNearbyShips");
-			}
-		}
-
-		private List<Vessel> GetNearbyVessels(double range, bool includeSelf)
-		{
-			try
-			{
-				var posCur = vessel.GetWorldPos3D();
-				var vessels = new List<Vessel>();
-				foreach (var v in FlightGlobals.Vessels.Where(
-					x => x.mainBody == vessel.mainBody))
-				{
-					if (v == vessel && !includeSelf) continue;
-					var posNext = v.GetWorldPos3D();
-					var distance = Vector3d.Distance(posCur, posNext);
-					if (distance < range)
-					{
-						vessels.Add(v);
-					}
-				}
-				return vessels;
-			}
-			catch (Exception ex)
-			{
-				print(String.Format("[WSXWARP] - ERROR in GetNearbyVessels - {0}", ex.Message));
-				return new List<Vessel>();
 			}
 		}
 	}

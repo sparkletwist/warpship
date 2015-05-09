@@ -7,11 +7,20 @@ namespace WarpShip
 {
 	public class Develocitizer : PartModule
 	{
-		[KSPField]
+		[KSPField(isPersistant = false)]
 		public string engageEffectName = "engage";
+
+		[KSPField(isPersistant = false)]
+		public float powerMultiplier = 8.0f;
 
 		[KSPField(guiActive = true, guiName = "Develocitizer", guiActiveEditor = false)]
 		public string rechargeNotice = "Ready";
+
+		[KSPField(isPersistant = true, guiActive = true, guiName = "Reference Frame", guiActiveEditor = false)]
+		public string rFrame = "Local";
+
+		[KSPField(isPersistant = true)]
+		public float rFrameVal = 0;
 
 		[KSPField(isPersistant = true)]
 		public float recharge = 0.0f;
@@ -22,6 +31,28 @@ namespace WarpShip
 		[KSPField(isPersistant = true)]
 		public float maxPowerDrain = 0.0f;
 
+		[KSPField(isPersistant = false)]
+		public string resourceUsed = "ElectricCharge";
+
+		public override string GetInfo()
+		{
+			return String.Format ("<b>{0} Used:</b> {1:F2} per m/sec.", resourceUsed, powerMultiplier);
+		}
+
+		[KSPEvent(guiName = "Change Ref. Frame", guiActive = true)]
+		public void ChangeRefFrame()
+		{
+			rFrameVal++;
+			if (rFrame == "Local") {
+				rFrame = "Planetary";
+			} else if (rFrame == "Planetary") {
+				rFrame = "System";
+			} else if (rFrame == "System") {
+				rFrame = "Local";
+				rFrameVal = 0;
+			}
+		}
+
 		[KSPEvent(guiName = "Develocitize", guiActive = true)]
 		public void Develocitize()
 		{
@@ -29,14 +60,40 @@ namespace WarpShip
 			if (recharge <= 0.0f) {
 				double ut = Planetarium.GetUniversalTime ();
 				Orbit curo = vessel.orbitDriver.orbit;
-				Vector3d prograde = curo.getOrbitalVelocityAtUT(ut).normalized;
+				Vector3d currentVelocity = curo.getOrbitalVelocityAtUT (ut);
+				Vector3d prograde = currentVelocity.normalized;
 
-				float obt_mag = vessel.GetObtVelocity().magnitude;
-				double powerCost = (int)obt_mag / 10;
-				double powerGot = WSXStuff.ThingAvailable(vessel, "ElectricCharge");
+				bool nomoon = false;
+				Vector3d vlocal = new Vector3d(0.0, 0.0, 0.0);
+				Vector3d vplanetary = new Vector3d(0.0, 0.0, 0.0);
+				if (vessel.mainBody && vessel.mainBody.orbitDriver) {
+					vlocal = vessel.mainBody.orbitDriver.orbit.getOrbitalVelocityAtUT (ut);
 
+					CelestialBody rb = vessel.mainBody.referenceBody;
+					if (rb != null && rb != vessel.mainBody && rb.orbitDriver) {
+						vplanetary = rb.orbitDriver.orbit.getOrbitalVelocityAtUT (ut);
+					} else {
+						vplanetary = vlocal;
+						vlocal = new Vector3d (0.0, 0.0, 0.0);
+						nomoon = true;
+					}
+				}	
+
+				// Do not call GetObtVelocity and expect it to work with this code
+				// It switches around Y and Z
+				Vector3d velocityToCancel = new Vector3d(0.0, 0.0, 0.0);
+				if (rFrameVal > 0)
+					velocityToCancel += vlocal;
+				if (rFrameVal > 1)
+					velocityToCancel += vplanetary;
+				Vector3d exVelocityToCancel = velocityToCancel;
+				velocityToCancel += currentVelocity;
+
+				double speedToCancel = velocityToCancel.magnitude;
+				double powerCost = (int)speedToCancel * powerMultiplier;
+				double powerGot = WSXStuff.ThingAvailable(vessel, resourceUsed);
 				if (powerGot < powerCost) {
-					rechargeNotice = "no power";
+					rechargeNotice = "No power";
 					this.recharge = 2.0f;
 					return;
 				}
@@ -44,19 +101,21 @@ namespace WarpShip
 				powerDrain = (float)powerCost;
 				maxPowerDrain = powerDrain;
 				part.Effect(engageEffectName, 1.0f);
-				
+
 				// Extremely small velocities cause the game to mess up very badly, so try something small and increase...
-				float mult = 2.0f;
+				float mult = 0.0f;
+				if (rFrameVal == 0 || nomoon)
+					mult = 2.0f;
 				Orbit newo;
 				do {
-					Vector3d tiny_prograde = prograde * mult;
+					Vector3d retro = prograde * -mult;
 					newo = new Orbit (curo.inclination, curo.eccentricity, curo.semiMajorAxis,
 					             curo.LAN, curo.argumentOfPeriapsis, curo.meanAnomalyAtEpoch, curo.epoch, curo.referenceBody);
-					newo.UpdateFromStateVectors (curo.pos, tiny_prograde, curo.referenceBody, ut);
-					mult += 2.0f;
+					newo.UpdateFromStateVectors (curo.pos, retro - exVelocityToCancel, curo.referenceBody, ut);
+					mult += 1.0f;
 				} while (double.IsNaN(newo.getOrbitalVelocityAtUT (ut).magnitude));
 
-				mult -= 2.0f;
+				mult -= 1.0f;
 				print ("[WSXDV] Needed Multiplier " + mult.ToString());
 
 				vessel.Landed = false;
@@ -76,6 +135,7 @@ namespace WarpShip
 				var allVessels = FlightGlobals.fetch == null ? (IEnumerable<Vessel>)new[] { vessel } : FlightGlobals.Vessels;
 				foreach (var v in allVessels.Where(v => v.packed == false))
 					v.GoOnRails();
+				// End HyperEdit code I don't really understand
 
 				curo.inclination = newo.inclination;
 				curo.eccentricity = newo.eccentricity;
@@ -91,9 +151,14 @@ namespace WarpShip
 				vessel.orbitDriver.vel = vessel.orbit.vel;
 
 				Events ["Develocitize"].active = false;
-				rechargeNotice = "Charging...";
 				this.recharge = 5.0f;
 			}
+		}
+
+		[KSPAction("Change Ref Frame")]
+		public void ChangeRefFrameAction(KSPActionParam ap)
+		{
+			ChangeRefFrame();
 		}
 
 		[KSPAction("Develocitize")]
@@ -102,12 +167,15 @@ namespace WarpShip
 			Develocitize();
 		}
 
-		public void FixedUpdate() {
-			if (recharge > 0.0f) {
+		public void FixedUpdate() 
+		{
+			if (powerDrain > 0.0f || recharge > 0.0f) {
+				Events ["Develocitize"].active = false;
 				float dt = TimeWarp.fixedDeltaTime;
 				recharge -= dt;
 
 				if (powerDrain > 0.0f) {
+					rechargeNotice = "Charging...";
 					float curPowerDrain = (maxPowerDrain / 5.0f) * dt;
 					if (powerDrain < curPowerDrain)
 						curPowerDrain = powerDrain;					
