@@ -842,16 +842,18 @@ namespace WarpShip
 				}
 				//Set our color
 				if (storedGameObject == null) {
-					foreach (var gobj in GameObject.FindGameObjectsWithTag("Icon_Hidden"))
-					{
-						if (gobj.name == "Torus_001")
-						{
-							storedGameObject = gobj;
-							break;
+					MeshRenderer[] pRenderers = part.FindModelComponents<MeshRenderer>();
+					for (var i=0;i<pRenderers.Length;i++) {
+						MeshRenderer mr = pRenderers[i];
+						if (mr.gameObject.tag == "Icon_Hidden") {
+							if (mr.gameObject.name == "Torus_001") {
+								storedGameObject = mr.gameObject;
+								break;
+							}
 						}
 					}
 				}
-
+					
 				var c = new Color(0.2f + 0.2f*throttle + 0.2f*light, 0.3f + 0.5f*throttle, 0.3f + 0.6f*throttle + 0.1f*light);
 				storedGameObject.renderer.material.SetColor("_Color", c);
 
