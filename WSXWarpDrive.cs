@@ -70,6 +70,9 @@ namespace WarpShip
 		public float MinThrottle = 0.05f;
 
 		[KSPField(isPersistant = true)] 
+		public bool firstActivation = true;
+
+		[KSPField(isPersistant = true)] 
 		public bool IsDeployed = false;
 
 		[KSPField(isPersistant = true)] 
@@ -215,8 +218,14 @@ namespace WarpShip
 
 				silenceWarnings = true;
 
-				part.force_activate();
-				CheckBubbleDeployment(1000);
+				// This shouldn't need to activate every time it loads...
+				// I think this was to sync it to the engine state, but there
+				// is no longer any underlying ModuleEngine to care about
+				if (firstActivation) {
+					part.force_activate();
+					CheckBubbleDeployment(1000);
+					firstActivation = false;
+				}
 
 				base.OnLoad(node);
 				if (AMConservationMode == true)
@@ -885,16 +894,32 @@ namespace WarpShip
 				var posBubble = part.partTransform.position;
 				float sqrBubbleSize = BubbleSize+BubbleEnhancement;
 				sqrBubbleSize *= sqrBubbleSize;
+				bool inside, outside;
+				int ex;
 
 				foreach (var p in vessel.parts)
 				{
 					if (p == part) continue;
 
-					MeshFilter[] mf = p.FindModelComponents<MeshFilter>();
-					bool inside = false;
-					bool outside = false;
+					if (p.physicalSignificance == Part.PhysicalSignificance.NONE)
+						continue;
+
 					float longest = -1;
 
+					inside = false;
+					outside = false;
+					ex = 1;
+
+					bool ignoreThis = false;;
+
+					// The Communotron 99-99 causes problems
+					if (p.FindModuleImplementing<ModuleDataTransmitter>())
+						ignoreThis = true;
+
+					if (ignoreThis)
+						continue;
+
+					MeshFilter[] mf = p.FindModelComponents<MeshFilter>();
 					for (var i=0;i<mf.Length;i++) {
 						Bounds mrb = mf[i].mesh.bounds;
 
@@ -902,8 +927,8 @@ namespace WarpShip
 							for (var y=-1;y<=1;y+=2) {
 								for (var x=-1;x<=1;x+=2) {
 									// xzy because that's the coordinate system KSP likes to use
-									Vector3 boxpt = new Vector3(mrb.center.x + x * mrb.extents.x,
-										mrb.center.z + z * mrb.extents.z, mrb.center.y + y * mrb.extents.y);
+									Vector3 boxpt = new Vector3(mrb.center.x + ex * x * mrb.extents.x,
+										mrb.center.z + ex * z * mrb.extents.z, mrb.center.y + ex * y * mrb.extents.y);
 									Vector3 tpt = p.transform.TransformPoint(boxpt);
 
 									float sqrDistance = (tpt-posBubble).sqrMagnitude;
@@ -921,11 +946,15 @@ namespace WarpShip
 									if (inside && outside) {
 										SomethingExploded = true;
 										ExplodeParts[partn++] = p;
+										print("[WSXWARP] Bubble hit " + p.name + " at dist " + Math.Sqrt(longest));
 										if (partn == ExplodeParts.Length) {
 											Array.Resize<Part>(ref ExplodeParts, ExplodeParts.Length*2);
 										}
 										goto GotoConsideredHarmful;
 									}
+
+									if (ex == 0)
+										goto GotoConsideredHarmful;
 								}
 							}
 						}
@@ -938,9 +967,11 @@ namespace WarpShip
 				if (SomethingExploded) {					
 					BubbleCollapse();
 					ShutdownDrive(true);
+
 					for (var x=0;x<partn;x++) {
 						WSXStuff.PowerfulExplosion(ExplodeParts[x]);
 					}
+
 					WarningSound();
 					RedAlert();
 					return false;
