@@ -139,7 +139,7 @@ namespace WarpShip
 			OpenIntake();
 		}
 
-		[KSPAction("Deactive")]
+		[KSPAction("Deactivate")]
 		public void CloseIntakeAction(KSPActionParam ap)
 		{
 			CloseIntake();

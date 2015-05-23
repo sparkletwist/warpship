@@ -1,4 +1,5 @@
-﻿/* This code is largely copied from RoverDude's USI_ModuleWarpEngine.cs
+﻿/* This code is largely copied from USI_ModuleWarpEngine.cs
+ * by RoverDude and Helaeon, with code also from Serino.
  * However, I (Sophia) have hacked it a great deal so any bugs
  * introduced are probably my fault. */
 
@@ -995,7 +996,6 @@ namespace WarpShip
 					speed = wantspeed*5;
 					
 				//print("[WSXWARP] CHECKING BUBBLE " + speed);
-				//Turn off guide if there              
 				if (IsDeployed)
 				{
 					SetDeployedState(speed);
@@ -1004,12 +1004,11 @@ namespace WarpShip
 				{
 					SetRetractedState(-speed);
 				}
-				if (_state != StartState.Editor)
-				{
-					GameObject gobj = FindEditorWarpBubble();
-					if (gobj != null)
-						gobj.renderer.enabled = false;
-				}
+					
+				GameObject gobj = FindEditorWarpBubble();
+				if (gobj != null)
+					gobj.renderer.enabled = false;
+				
 			}
 			catch (Exception)
 			{

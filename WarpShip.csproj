@@ -49,6 +49,7 @@
     <Compile Include="WSXSpaceElevator.cs" />
     <Compile Include="WSXColorReconfigure.cs" />
     <Compile Include="WSXFSFuelSwitch.cs" />
+    <Compile Include="WSXLightSwitch.cs" />
   </ItemGroup>
   <Import Project="$(MSBuildBinPath)\Microsoft.CSharp.targets" />
 </Project>
